@@ -1,126 +1,74 @@
+// 页面操作层：色牢度检测台主页面
+// 分层：domain/fastness = 检测规则；data/archive = 批次存档；ui/* = 页面操作
 import "./styles.css";
-
-const project = {
-  "sourceNo": 7,
-  "id": "hxyfront-62012",
-  "port": 62012,
-  "title": "纺织染整小样管理",
-  "domain": "纺织染整",
-  "prompt": "我需要一个纺织染整实验室的小样管理前端系统，可以记录面料成分、克重、染料配方、浴比、温度曲线、保温时间、后整理方式、色差值和评审结果。页面需要有小样批次列表、配方比例展示、Lab色差对比、工艺曲线摘要和按客户订单筛选。",
-  "palette": [
-    "#be123c",
-    "#4f46e5",
-    "#16a34a"
-  ],
-  "metrics": [
-    "小样批次",
-    "色差超限",
-    "客户订单",
-    "通过率"
-  ],
-  "filters": [
-    "棉",
-    "涤纶",
-    "锦纶",
-    "混纺"
-  ],
-  "fields": [
-    "面料成分",
-    "克重",
-    "染料配方",
-    "浴比",
-    "保温时间",
-    "色差值"
-  ],
-  "records": [
-    [
-      "LAB-620A",
-      "棉府绸120g",
-      "ΔE 0.84",
-      "评审通过"
-    ],
-    [
-      "LAB-621C",
-      "涤纶针织",
-      "升温曲线偏快",
-      "待复染"
-    ],
-    [
-      "LAB-624B",
-      "混纺斜纹",
-      "后整理柔软剂2%",
-      "客户确认中"
-    ]
-  ]
-};
+import { useMemo, useState } from "react";
+import { buildTaskView, useArchive } from "./data/archive";
+import OrderPanel from "./ui/OrderPanel";
+import TaskBoard from "./ui/TaskBoard";
 
 function App() {
+  const { state, actions } = useArchive();
+  const [orderFilter, setOrderFilter] = useState<string | "all">("all");
+
+  const metrics = useMemo(() => {
+    const views = state.batches.map((b) => buildTaskView(state, b));
+    const active = views.filter((v) => v.batch.status === "active");
+    return [
+      { label: "客户订单", value: state.orders.length },
+      { label: "进行中任务", value: active.length },
+      { label: "待改善", value: active.filter((v) => v.status === "improve").length },
+      {
+        label: "已出报告",
+        value: state.reports.filter((r) => r.status === "valid").length,
+      },
+    ];
+  }, [state]);
+
   return (
     <main className="app">
       <section className="hero">
-        <p>{project.id} · 源提示词{project.sourceNo} · Port {project.port}</p>
-        <h1>{project.title}</h1>
-        <span>{project.prompt}</span>
+        <p>hxyfront-62012 · 纺织染整实验室</p>
+        <h1>色牢度检测台</h1>
+        <span>
+          小样按客户订单建检测任务，订单先定必检项目与最低评级；每项记录试样方向、试验条件与两条复测评级（摩擦分干/湿）。
+          缺项或任一项低于要求即保存为「待改善」并列出卡住的项目，整单报告不能生成；
+          面料成分、配方或后整理一经变更，旧检测与报告作废、历史版本保留。
+        </span>
+        <div>
+          <button
+            className="ghost"
+            onClick={() => {
+              if (window.confirm("确定清空当前存档并恢复演示数据？")) actions.resetAll();
+            }}
+          >
+            重置演示数据
+          </button>
+        </div>
       </section>
 
       <section className="metrics">
-        {project.metrics.map((metric: string, index: number) => (
-          <article key={metric}>
-            <small>{metric}</small>
-            <strong>{[28, 6, 14, 91][index] ?? 10}</strong>
+        {metrics.map((m) => (
+          <article key={m.label}>
+            <small>{m.label}</small>
+            <strong>{m.value}</strong>
           </article>
         ))}
       </section>
 
-      <section className="workspace">
-        <aside className="panel">
-          <h2>{project.domain}分类</h2>
-          <div className="chips">
-            {project.filters.map((item: string) => (
-              <button key={item}>{item}</button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="panel form-panel">
-          <div className="heading">
-            <div>
-              <p>专业字段</p>
-              <h2>新增记录</h2>
-            </div>
-            <button className="primary">保存记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="panel">
-        <div className="heading">
-          <div>
-            <p>近期记录</p>
-            <h2>工作台摘要</h2>
-          </div>
-          <button>导出CSV</button>
-        </div>
-        <div className="records">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")}>
-              <b>{String(index + 1).padStart(2, "0")}</b>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
+      <div className="layout">
+        <OrderPanel
+          orders={state.orders}
+          selectedOrderId={orderFilter}
+          onSelectOrder={setOrderFilter}
+          onAddOrder={actions.addOrder}
+        />
+        <TaskBoard
+          state={state}
+          actions={actions}
+          orderFilter={orderFilter}
+          onOrderFilter={setOrderFilter}
+        />
+      </div>
     </main>
   );
 }
