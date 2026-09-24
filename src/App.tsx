@@ -1,128 +1,235 @@
+import { useMemo, useState } from "react";
 import "./styles.css";
+import { ArchiveProvider, toRow, useArchive } from "./archive";
+import { evaluateVersion, gradeLabel } from "./rules";
+import type { SampleStatus } from "./types";
+import { OrderModal, SampleModal } from "./components/Modals";
+import { SampleDetail, StatusBadge } from "./components/SampleDetail";
 
-const project = {
-  "sourceNo": 7,
-  "id": "hxyfront-62012",
-  "port": 62012,
-  "title": "纺织染整小样管理",
-  "domain": "纺织染整",
-  "prompt": "我需要一个纺织染整实验室的小样管理前端系统，可以记录面料成分、克重、染料配方、浴比、温度曲线、保温时间、后整理方式、色差值和评审结果。页面需要有小样批次列表、配方比例展示、Lab色差对比、工艺曲线摘要和按客户订单筛选。",
-  "palette": [
-    "#be123c",
-    "#4f46e5",
-    "#16a34a"
-  ],
-  "metrics": [
-    "小样批次",
-    "色差超限",
-    "客户订单",
-    "通过率"
-  ],
-  "filters": [
-    "棉",
-    "涤纶",
-    "锦纶",
-    "混纺"
-  ],
-  "fields": [
-    "面料成分",
-    "克重",
-    "染料配方",
-    "浴比",
-    "保温时间",
-    "色差值"
-  ],
-  "records": [
-    [
-      "LAB-620A",
-      "棉府绸120g",
-      "ΔE 0.84",
-      "评审通过"
-    ],
-    [
-      "LAB-621C",
-      "涤纶针织",
-      "升温曲线偏快",
-      "待复染"
-    ],
-    [
-      "LAB-624B",
-      "混纺斜纹",
-      "后整理柔软剂2%",
-      "客户确认中"
-    ]
-  ]
-};
+const UI_PREFS_KEY = "colorfastness-ui-v1";
 
-function App() {
+const STATUS_FILTERS: { value: SampleStatus | "all"; label: string }[] = [
+  { value: "all", label: "全部状态" },
+  { value: "draft", label: "进行中" },
+  { value: "improve", label: "待改善" },
+  { value: "pass", label: "合格" },
+  { value: "reported", label: "已出报告" },
+];
+
+interface UIPrefs {
+  orderId: string;
+  status: SampleStatus | "all";
+  expanded: string | null;
+}
+
+function loadPrefs(): UIPrefs {
+  try {
+    const raw = localStorage.getItem(UI_PREFS_KEY);
+    if (raw) return { orderId: "all", status: "all", expanded: null, ...JSON.parse(raw) };
+  } catch {
+    /* ignore */
+  }
+  return { orderId: "all", status: "all", expanded: null };
+}
+
+function SampleCardSummary({
+  row,
+  onExpand,
+}: {
+  row: ReturnType<typeof toRow>;
+  onExpand: () => void;
+}) {
+  const { sample, order, current, status } = row;
+  const eval_ = evaluateVersion(current);
+  const miss = eval_.blockers.filter((b) => b.kind === "missing").length;
+  const below = eval_.blockers.filter((b) => b.kind === "below").length;
+  const incomplete = eval_.blockers.filter((b) => b.kind === "incomplete").length;
+
+  return (
+    <article className="sample-card" onClick={onExpand}>
+      <div className="sc-main">
+        <div className="sc-title">
+          <b>{sample.code}</b>
+          <StatusBadge status={status} />
+          <span className="sc-ver">V{current.versionNo}{current.voidReason ? "（旧版作废）" : ""}</span>
+        </div>
+        <p className="sc-sub">
+          {order ? `${order.code} · ${order.customer}` : "订单已删除"} ｜{" "}
+          {current.spec.composition || "成分未填"} ｜ {current.spec.finish || "后整理未填"}
+        </p>
+      </div>
+      <div className="sc-side">
+        {current.submitted && !current.voidReason ? (
+          eval_.pass ? (
+            <span className="sc-low ok">
+              最低 {eval_.lowest != null ? gradeLabel(eval_.lowest) : "—"} 级 · 合格
+            </span>
+          ) : (
+            <span className="sc-low bad">
+              {miss > 0 && <i>缺{miss}项</i>}
+              {below > 0 && <i>{below}项不达标</i>}
+              {incomplete > 0 && <i>{incomplete}项未填全</i>}
+            </span>
+          )
+        ) : (
+          <span className="sc-low dim">{current.entries.length}/{current.requirement.requiredItems.length} 项已录</span>
+        )}
+        <span className="sc-expand">展开详情 ▾</span>
+      </div>
+    </article>
+  );
+}
+
+function Workbench() {
+  const { data, dispatch } = useArchive();
+  const [prefs, setPrefs] = useState<UIPrefs>(loadPrefs);
+  const [showOrder, setShowOrder] = useState(false);
+  const [showSample, setShowSample] = useState(false);
+
+  const persist = (patch: Partial<UIPrefs>) =>
+    setPrefs((p) => {
+      const next = { ...p, ...patch };
+      try {
+        localStorage.setItem(UI_PREFS_KEY, JSON.stringify(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+
+  const rows = useMemo(
+    () =>
+      data.samples
+        .map((s) => toRow(s, data.orders))
+        .filter((r) => (prefs.orderId === "all" ? true : r.sample.orderId === prefs.orderId))
+        .filter((r) => (prefs.status === "all" ? true : r.status === prefs.status))
+        .sort((a, b) => b.sample.createdAt - a.sample.createdAt),
+    [data, prefs.orderId, prefs.status],
+  );
+
+  const allRows = useMemo(() => data.samples.map((s) => toRow(s, data.orders)), [data]);
+  const metrics = [
+    { label: "检测任务", value: allRows.length },
+    { label: "待改善（卡住）", value: allRows.filter((r) => r.status === "improve").length },
+    { label: "已出报告", value: allRows.filter((r) => r.status === "reported").length },
+    {
+      label: "合格率",
+      value:
+        (() => {
+          const done = allRows.filter((r) => r.status === "pass" || r.status === "reported");
+          return done.length ? `${Math.round((allRows.filter((r) => r.status === "reported").length / done.length) * 100)}%` : "—";
+        })(),
+    },
+  ];
+
+  // 展开行不被当前筛掉时仍可显示
+  const expandedRow = prefs.expanded
+    ? allRows.find((r) => r.sample.id === prefs.expanded)
+    : undefined;
+
   return (
     <main className="app">
-      <section className="hero">
-        <p>{project.id} · 源提示词{project.sourceNo} · Port {project.port}</p>
-        <h1>{project.title}</h1>
-        <span>{project.prompt}</span>
-      </section>
+      <header className="topbar">
+        <div>
+          <h1>色牢度检测台</h1>
+          <p>染整实验室 · 耐洗 / 摩擦（干湿）/ 汗渍 · 按客户订单必检与最低评级判定</p>
+        </div>
+        <div className="top-actions">
+          <button onClick={() => setShowOrder(true)}>＋ 新建订单</button>
+          <button className="primary" onClick={() => setShowSample(true)}>
+            ＋ 按订单建小样任务
+          </button>
+          <button
+            className="ghost"
+            title="清空当前数据并恢复内置演示任务"
+            onClick={() => {
+              if (confirm("恢复演示数据将覆盖当前存档，确定？")) dispatch({ type: "resetSeed" });
+            }}
+          >
+            恢复演示
+          </button>
+        </div>
+      </header>
 
       <section className="metrics">
-        {project.metrics.map((metric: string, index: number) => (
-          <article key={metric}>
-            <small>{metric}</small>
-            <strong>{[28, 6, 14, 91][index] ?? 10}</strong>
+        {metrics.map((m) => (
+          <article key={m.label}>
+            <small>{m.label}</small>
+            <strong>{m.value}</strong>
           </article>
         ))}
       </section>
 
-      <section className="workspace">
-        <aside className="panel">
-          <h2>{project.domain}分类</h2>
-          <div className="chips">
-            {project.filters.map((item: string) => (
-              <button key={item}>{item}</button>
+      <section className="filters panel">
+        <label>
+          <span>客户订单</span>
+          <select value={prefs.orderId} onChange={(e) => persist({ orderId: e.target.value })}>
+            <option value="all">全部订单</option>
+            {data.orders.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.code} · {o.customer}
+              </option>
             ))}
-          </div>
-        </aside>
+          </select>
+        </label>
+        <label>
+          <span>状态</span>
+          <select value={prefs.status} onChange={(e) => persist({ status: e.target.value as UIPrefs["status"] })}>
+            {STATUS_FILTERS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span className="filter-count">共 {rows.length} 个任务</span>
+      </section>
 
-        <section className="panel form-panel">
-          <div className="heading">
-            <div>
-              <p>专业字段</p>
-              <h2>新增记录</h2>
+      {expandedRow ? (
+        <SampleDetail row={expandedRow} onCollapse={() => persist({ expanded: null })} />
+      ) : (
+        <section className="sample-list">
+          {rows.length === 0 && (
+            <div className="empty panel">
+              当前筛选下没有任务。点击右上角「按订单建小样任务」开始检测。
             </div>
-            <button className="primary">保存记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="panel">
-        <div className="heading">
-          <div>
-            <p>近期记录</p>
-            <h2>工作台摘要</h2>
-          </div>
-          <button>导出CSV</button>
-        </div>
-        <div className="records">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")}>
-              <b>{String(index + 1).padStart(2, "0")}</b>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
+          )}
+          {rows.map((row) => (
+            <SampleCardSummary key={row.sample.id} row={row} onExpand={() => persist({ expanded: row.sample.id })} />
           ))}
-        </div>
-      </section>
+        </section>
+      )}
+
+      <footer className="foot-note">
+        缺项或任一项低于订单最低评级 → 保存为「待改善」并列出卡住项目，整单报告不可生成；
+        面料成分 / 配方 / 后整理一改，旧检测与报告作废、历史版本保留。数据存于本机浏览器，重开页面可继续。
+      </footer>
+
+      {showOrder && (
+        <OrderModal
+          onClose={() => setShowOrder(false)}
+          onCreated={() => {
+            setShowOrder(false);
+          }}
+        />
+      )}
+      {showSample && (
+        <SampleModal
+          onClose={() => setShowSample(false)}
+          onCreated={(s) => {
+            setShowSample(false);
+            persist({ orderId: "all", status: "all", expanded: s.id });
+          }}
+        />
+      )}
     </main>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <ArchiveProvider>
+      <Workbench />
+    </ArchiveProvider>
+  );
+}
